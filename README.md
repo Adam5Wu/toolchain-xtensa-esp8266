@@ -11,6 +11,6 @@ PlatformIO toolchain package bundling Espressif's `xtensa-esp-elf` **GCC 16.2.0*
 
 ## Usage Notes (ESP8266 Call0 ABI)
 
-- Select the ESP8266 multilib with `-mdynconfig=xtensa_esp8266.so` (and `-fno-rtti` for `esp8266/no-rtti`).
-- On Windows, set `XTENSA_GNU_CONFIG=<package_dir>/lib/xtensa_esp8266.so` (or include `<package_dir>/lib` on `PATH`) so `cc1.exe`, `cc1plus.exe`, `as.exe`, and `ld.exe` load the dynconfig plugin reliably.
+- Select the ESP8266 multilib with `-mdynconfig=xtensa_esp8266.so` (and `-fno-rtti` for `esp8266/no-rtti`), and include `<package_dir>/lib` on `PATH` with `XTENSA_GNU_CONFIG` **unset** so `cc1.exe`, `cc1plus.exe`, `as.exe`, and `ld.exe` load the dynconfig plugin reliably.
+- Do **not** pass an absolute path to `-mdynconfig=` (GCC's multilib matcher expects the literal `xtensa_esp8266.so` from `-print-multi-lib` and otherwise falls back to the default `.` windowed multilib), and do **not** combine `XTENSA_GNU_CONFIG=<abs>` with `-mdynconfig=xtensa_esp8266.so` (`cc1.exe` aborts when they differ as strings).
 - Re-pack reproducibly with `python scripts/build_package.py`.
