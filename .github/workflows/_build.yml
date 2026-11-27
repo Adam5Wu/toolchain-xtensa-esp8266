@@ -1,0 +1,267 @@
+name: Build ESP8266 Custom Multilib Toolchain
+
+on:
+  workflow_call:
+    outputs:
+      pkg_version:
+        description: "Package version from package.json"
+        value: ${{ jobs.package.outputs.pkg_version }}
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache upstream Linux toolchain and stock multilib
+        id: cache-upstream
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/esp8266-upstream
+          key: upstream-esp-16.2.0_20261109-v1
+
+      - name: Fetch and verify upstream Linux toolchain and stock multilib
+        run: |
+          set -euo pipefail
+          CACHE_DIR="$HOME/.cache/esp8266-upstream"
+          mkdir -p "$CACHE_DIR"
+          TAG="esp-16.2.0_20261109"
+          LINUX_TC="$CACHE_DIR/xtensa-esp-elf-16.2.0_20261109-x86_64-linux-gnu.tar.xz"
+          ESP8266_ML="$CACHE_DIR/xtensa-esp-elf-16.2.0_20261109-esp8266-multilib.tar.xz"
+          LINUX_SHA="085098d02d56c7b2c8942ccb3c934b610adb57aa5b687e3fc1fc4e26b8f2fe40"
+          ML_SHA="515e90793ba949cfa60d4dd8297862b0a46f5275c024dcc1ac64e3dc2b80b0ba"
+
+          if [[ ! -f "$LINUX_TC" ]]; then
+            curl -sfL "https://github.com/espressif/crosstool-NG/releases/download/${TAG}/xtensa-esp-elf-16.2.0_20261109-x86_64-linux-gnu.tar.xz" -o "$LINUX_TC"
+          fi
+          if [[ ! -f "$ESP8266_ML" ]]; then
+            curl -sfL "https://github.com/espressif/crosstool-NG/releases/download/${TAG}/xtensa-esp-elf-16.2.0_20261109-esp8266-multilib.tar.xz" -o "$ESP8266_ML"
+          fi
+
+          echo "${LINUX_SHA}  ${LINUX_TC}" | sha256sum -c -
+          echo "${ML_SHA}  ${ESP8266_ML}" | sha256sum -c -
+
+  build-libstdcxx:
+    needs: prep
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        libc: [newlib, newlib-nano]
+        rtti: [rtti, no-rtti]
+        exceptions: [exceptions, no-exceptions]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore upstream cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/esp8266-upstream
+          key: upstream-esp-16.2.0_20261109-v1
+
+      - name: Build and audit libstdc++ (${{ matrix.libc }} / ${{ matrix.rtti }} / ${{ matrix.exceptions }})
+        env:
+          LIBC: ${{ matrix.libc }}
+          RTTI: ${{ matrix.rtti }}
+          EXCEPTIONS: ${{ matrix.exceptions }}
+          LINUX_TC_TAR: /home/runner/.cache/esp8266-upstream/xtensa-esp-elf-16.2.0_20261109-x86_64-linux-gnu.tar.xz
+          ESP8266_ML_TAR: /home/runner/.cache/esp8266-upstream/xtensa-esp-elf-16.2.0_20261109-esp8266-multilib.tar.xz
+          OUT_DIR: ${{ runner.temp }}/out/${{ matrix.libc }}_${{ matrix.rtti }}_${{ matrix.exceptions }}
+        run: bash scripts/build_libstdcxx_variant.sh
+
+      - name: Upload libstdc++ variant output
+        uses: actions/upload-artifact@v4
+        with:
+          name: libstdcxx-${{ matrix.libc }}-${{ matrix.rtti }}-${{ matrix.exceptions }}
+          path: ${{ runner.temp }}/out/${{ matrix.libc }}_${{ matrix.rtti }}_${{ matrix.exceptions }}
+          retention-days: 1
+
+  build-newlib-nano:
+    needs: prep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore upstream cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/esp8266-upstream
+          key: upstream-esp-16.2.0_20261109-v1
+
+      - name: Build and audit newlib-nano
+        env:
+          LINUX_TC_TAR: /home/runner/.cache/esp8266-upstream/xtensa-esp-elf-16.2.0_20261109-x86_64-linux-gnu.tar.xz
+          ESP8266_ML_TAR: /home/runner/.cache/esp8266-upstream/xtensa-esp-elf-16.2.0_20261109-esp8266-multilib.tar.xz
+          OUT_DIR: ${{ runner.temp }}/out/newlib-nano
+        run: bash scripts/build_newlib_nano.sh
+
+      - name: Upload newlib-nano output
+        uses: actions/upload-artifact@v4
+        with:
+          name: newlib-nano
+          path: ${{ runner.temp }}/out/newlib-nano
+          retention-days: 1
+
+  package:
+    needs: [prep, build-libstdcxx, build-newlib-nano]
+    runs-on: ubuntu-latest
+    outputs:
+      pkg_version: ${{ steps.meta.outputs.pkg_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore upstream cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/esp8266-upstream
+          key: upstream-esp-16.2.0_20261109-v1
+
+      - name: Download built variant artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/variants
+
+      - name: Read package.json version
+        id: meta
+        run: |
+          PKG_VER="$(jq -r .version package.json)"
+          echo "pkg_version=$PKG_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify cross-variant c++config.h parity & assemble esp8266-custom-multilib.tar.xz
+        env:
+          VARIANTS: ${{ runner.temp }}/variants
+          OVERLAY_STAGE: ${{ runner.temp }}/overlay-stage
+          DIST_DIR: ${{ runner.temp }}/dist
+        run: |
+          set -euo pipefail
+          rm -rf "$OVERLAY_STAGE" "$DIST_DIR"
+          mkdir -p "$DIST_DIR"
+
+          # Verify byte-identical bits/c++config.h across {newlib, newlib-nano} x {exceptions, no-exceptions} per RTTI slot
+          for rtti in rtti no-rtti; do
+            ref="$VARIANTS/libstdcxx-newlib-${rtti}-exceptions/bits/c++config.h"
+            test -f "$ref"
+            for libc in newlib newlib-nano; do
+              for exc in exceptions no-exceptions; do
+                cand="$VARIANTS/libstdcxx-${libc}-${rtti}-${exc}/bits/c++config.h"
+                cmp -s "$ref" "$cand" || {
+                  echo "ERROR: c++config.h mismatch between $ref and $cand" >&2
+                  diff -u "$ref" "$cand" || true
+                  exit 1
+                }
+              done
+            done
+          done
+
+          # Populate overlay staging tree (regular files only, zero symlinks)
+          INC_ROOT="$OVERLAY_STAGE/xtensa-esp-elf/xtensa-esp-elf/include/c++/16.2.0/xtensa-esp-elf"
+          mkdir -p "$INC_ROOT/esp8266/bits" "$INC_ROOT/esp8266/no-rtti/bits"
+          cp "$VARIANTS/libstdcxx-newlib-rtti-exceptions/bits/c++config.h" "$INC_ROOT/esp8266/bits/c++config.h"
+          cp "$VARIANTS/libstdcxx-newlib-no-rtti-exceptions/bits/c++config.h" "$INC_ROOT/esp8266/no-rtti/bits/c++config.h"
+
+          for libc in newlib newlib-nano; do
+            if [[ "$libc" == "newlib" ]]; then
+              LIB_BASE="$OVERLAY_STAGE/xtensa-esp-elf/xtensa-esp-elf/lib"
+            else
+              LIB_BASE="$OVERLAY_STAGE/xtensa-esp-elf/newlib-nano/xtensa-esp-elf/lib"
+            fi
+
+            for rtti in rtti no-rtti; do
+              rtti_sub="esp8266"
+              [[ "$rtti" == "no-rtti" ]] && rtti_sub="esp8266/no-rtti"
+
+              if [[ "$libc" == "newlib-nano" ]]; then
+                mkdir -p "$LIB_BASE/$rtti_sub"
+                cp "$VARIANTS/newlib-nano/libc.a" "$LIB_BASE/$rtti_sub/libc.a"
+                cp "$VARIANTS/newlib-nano/libc_nano.a" "$LIB_BASE/$rtti_sub/libc_nano.a"
+                cp "$VARIANTS/newlib-nano/libg.a" "$LIB_BASE/$rtti_sub/libg.a"
+                cp "$VARIANTS/newlib-nano/libg_nano.a" "$LIB_BASE/$rtti_sub/libg_nano.a"
+              fi
+
+              for exc in exceptions no-exceptions; do
+                dest="$LIB_BASE/$rtti_sub"
+                [[ "$exc" == "no-exceptions" ]] && dest="$dest/no-exceptions"
+                mkdir -p "$dest"
+                src="$VARIANTS/libstdcxx-${libc}-${rtti}-${exc}"
+                cp "$src/libstdc++.a" "$dest/libstdc++.a"
+                cp "$src/libsupc++.a" "$dest/libsupc++.a"
+                if [[ "$libc" == "newlib-nano" ]]; then
+                  cp "$src/libstdc++.a" "$dest/libstdc++_nano.a"
+                  cp "$src/libsupc++.a" "$dest/libsupc++_nano.a"
+                fi
+              done
+            done
+          done
+
+          if [[ -n "$(find "$OVERLAY_STAGE" -type l)" ]]; then
+            echo "ERROR: Symlink found in overlay staging tree" >&2
+            find "$OVERLAY_STAGE" -type l >&2
+            exit 1
+          fi
+
+          tar -C "$OVERLAY_STAGE" --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+            -cf - xtensa-esp-elf | xz -6 -T1 > "$DIST_DIR/esp8266-custom-multilib.tar.xz"
+          (cd "$DIST_DIR" && sha256sum esp8266-custom-multilib.tar.xz > esp8266-custom-multilib.tar.xz.sha256)
+
+      - name: Assemble deterministic Windows toolchain package
+        env:
+          PKG_VER: ${{ steps.meta.outputs.pkg_version }}
+          DIST_DIR: ${{ runner.temp }}/dist
+          PKG_WORK: ${{ runner.temp }}/pkg-work
+          CACHE_DIR: /home/runner/.cache/esp8266-upstream
+        run: |
+          set -euo pipefail
+          mkdir -p "$PKG_WORK"
+          if [[ -f "$CACHE_DIR/xtensa-esp-elf-16.2.0_20261109-esp8266-multilib.tar.xz" ]]; then
+            cp "$CACHE_DIR/xtensa-esp-elf-16.2.0_20261109-esp8266-multilib.tar.xz" "$PKG_WORK/"
+          fi
+          python3 scripts/build_package.py \
+            --work-dir "$PKG_WORK" \
+            --custom-overlay "$DIST_DIR/esp8266-custom-multilib.tar.xz" \
+            --prune-picolibc \
+            --out "$DIST_DIR/toolchain-xtensa-esp8266-windows_amd64-${PKG_VER}.zip"
+
+      - name: Sanity-verify packaged archive contents
+        env:
+          PKG_VER: ${{ steps.meta.outputs.pkg_version }}
+          DIST_DIR: ${{ runner.temp }}/dist
+        run: |
+          set -euo pipefail
+          ZIP="$DIST_DIR/toolchain-xtensa-esp8266-windows_amd64-${PKG_VER}.zip"
+          (cd "$DIST_DIR" && sha256sum -c "toolchain-xtensa-esp8266-windows_amd64-${PKG_VER}.zip.sha256" -c "esp8266-custom-multilib.tar.xz.sha256")
+          python3 - "$ZIP" "$PKG_VER" <<'PYEOF'
+          import json, sys, zipfile
+          zpath, expected_ver = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(zpath, "r") as zf:
+              names = set(zf.namelist())
+              assert not any(n.startswith("picolibc/") for n in names), "picolibc/ was not pruned"
+              required = [
+                  "package.json",
+                  "xtensa-esp-elf/include/c++/16.2.0/xtensa-esp-elf/esp8266/bits/c++config.h",
+                  "xtensa-esp-elf/include/c++/16.2.0/xtensa-esp-elf/esp8266/no-rtti/bits/c++config.h",
+                  "xtensa-esp-elf/lib/esp8266/libstdc++.a",
+                  "xtensa-esp-elf/lib/esp8266/no-rtti/libstdc++.a",
+                  "xtensa-esp-elf/lib/esp8266/no-exceptions/libstdc++.a",
+                  "xtensa-esp-elf/lib/esp8266/no-rtti/no-exceptions/libstdc++.a",
+                  "newlib-nano/xtensa-esp-elf/lib/esp8266/libc_nano.a",
+                  "newlib-nano/xtensa-esp-elf/lib/esp8266/no-rtti/libc_nano.a",
+                  "newlib-nano/xtensa-esp-elf/lib/esp8266/no-exceptions/libstdc++_nano.a",
+                  "newlib-nano/xtensa-esp-elf/lib/esp8266/no-rtti/no-exceptions/libstdc++_nano.a",
+              ]
+              for r in required:
+                  assert r in names, f"Missing expected entry: {r}"
+              pkg = json.loads(zf.read("package.json").decode("utf-8"))
+              assert pkg["version"] == expected_ver, f"Version mismatch: {pkg['version']} != {expected_ver}"
+          print(f"Verified {len(names)} deterministic ZIP entries for version {expected_ver}.")
+          PYEOF
+
+      - name: Upload packaged distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-windows-amd64
+          path: ${{ runner.temp }}/dist/*
+          retention-days: 7

@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      pkg_version: ${{ steps.check.outputs.pkg_version }}
+    steps:
+      - name: Checkout repository with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main and matches package.json version
+        id: check
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "ERROR: Tagged commit $GITHUB_SHA is not an ancestor of origin/main." >&2
+            exit 1
+          fi
+          PKG_VER="$(jq -r .version package.json)"
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          if [[ "$TAG_VER" != "$PKG_VER" ]]; then
+            echo "ERROR: Tag version '$TAG_VER' does not match package.json version '$PKG_VER'." >&2
+            exit 1
+          fi
+          echo "pkg_version=$PKG_VER" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: verify-tag
+    uses: ./.github/workflows/_build.yml
+
+  draft-release:
+    needs: [verify-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-windows-amd64
+          path: dist
+
+      - name: Verify artifact checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c *.sha256
+
+      - name: Attest SLSA build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.tar.xz
+
+      - name: Create Draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          PKG_VER: ${{ needs.verify-tag.outputs.pkg_version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG_NAME" \
+            --draft \
+            --title "$TAG_NAME (xtensa-esp-elf GCC $PKG_VER)" \
+            --notes "Automated SLSA-attested draft release for $TAG_NAME (commit $GITHUB_SHA)." \
+            dist/*.zip dist/*.zip.sha256 dist/*.tar.xz dist/*.tar.xz.sha256

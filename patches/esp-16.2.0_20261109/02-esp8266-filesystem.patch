@@ -1,0 +1,215 @@
+diff --git a/libstdc++-v3/src/c++17/fs_dir.cc b/libstdc++-v3/src/c++17/fs_dir.cc
+index f6860e2..69951ef 100644
+--- a/libstdc++-v3/src/c++17/fs_dir.cc
++++ b/libstdc++-v3/src/c++17/fs_dir.cc
+@@ -32,6 +32,7 @@
+ #include <stack>
+ #include <string.h>
+ #include <errno.h>
++#include <unistd.h>
+ #define _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM namespace filesystem {
+ #define _GLIBCXX_END_NAMESPACE_FILESYSTEM }
+ #include "../filesystem/dir-common.h"
+@@ -160,7 +161,17 @@ struct fs::_Dir : _Dir_base
+ 	return true;
+       }
+ #else
+-    return fs::remove(entry.path(), ec);
++    if ((is_directory ? ::rmdir(entry.path().c_str())
++		      : ::unlink(entry.path().c_str())) == -1)
++      {
++	ec.assign(errno, std::generic_category());
++	return false;
++      }
++    else
++      {
++	ec.clear();
++	return true;
++      }
+ #endif
+   }
+ 
+@@ -502,6 +513,11 @@ fs::recursive_directory_iterator::__erase(error_code* ecptr)
+ 	      if (!ec)
+ 		{
+ 		  // Directory is empty so we can remove it.
++		  if (dir.dirp)
++		    {
++		      posix::closedir(dir.dirp);
++		      dir.dirp = nullptr;
++		    }
+ 		  if (top.rmdir(ec))
+ 		    break; // Success
+ 		}
+diff --git a/libstdc++-v3/src/c++17/fs_ops.cc b/libstdc++-v3/src/c++17/fs_ops.cc
+index 454962c..804ea72 100644
+--- a/libstdc++-v3/src/c++17/fs_ops.cc
++++ b/libstdc++-v3/src/c++17/fs_ops.cc
+@@ -35,7 +35,6 @@
+ #include <bits/largefile-config.h>
+ #include <filesystem>
+ #include <functional>
+-#include <ostream>
+ #include <stack>
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -873,6 +872,18 @@ fs::equiv_files([[maybe_unused]] const char_type* p1, const stat_type& st1,
+ {
+ #if ! _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   // For POSIX the device ID and inode number uniquely identify a file.
++  // On filesystems without inode/dev support (e.g. LittleFS), both are 0;
++  // compare normalized path strings instead.
++  if (st1.st_dev == 0 && st1.st_ino == 0 && st2.st_dev == 0 && st2.st_ino == 0)
++    {
++      auto norm = [](const char_type* p) {
++	auto s = fs::path(p).lexically_normal().native();
++	while (s.size() > 1 && s.back() == '/')
++	  s.pop_back();
++	return s;
++      };
++      return norm(p1) == norm(p2);
++    }
+   return st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino;
+ #else
+   // For Windows st_ino is not set, so can't be used to distinguish files.
+@@ -1308,6 +1319,15 @@ fs::remove(const path& p, error_code& ec) noexcept
+       ec.clear();
+       return true;
+     }
++#ifdef EPERM
++  if ((errno == EISDIR || errno == EPERM) && ::rmdir(p.c_str()) == 0)
++#else
++  if (errno == EISDIR && ::rmdir(p.c_str()) == 0)
++#endif
++    {
++      ec.clear();
++      return true;
++    }
+   else if (errno == ENOENT)
+     ec.clear();
+   else
+diff --git a/libstdc++-v3/src/c++17/fs_path.cc b/libstdc++-v3/src/c++17/fs_path.cc
+index 763d560..2c56c3a 100644
+--- a/libstdc++-v3/src/c++17/fs_path.cc
++++ b/libstdc++-v3/src/c++17/fs_path.cc
+@@ -2016,7 +2016,7 @@ path::string_type
+ path::_S_convert_loc(const char* __first, const char* __last,
+ 		     [[maybe_unused]] const std::locale& __loc)
+ {
+-#if _GLIBCXX_USE_WCHAR_T
++#if 0
+   auto& __cvt = std::use_facet<codecvt<wchar_t, char, mbstate_t>>(__loc);
+   basic_string<wchar_t> __ws;
+   if (!__str_codecvt_in_all(__first, __last, __ws, __cvt))
+diff --git a/libstdc++-v3/src/filesystem/dir-common.h b/libstdc++-v3/src/filesystem/dir-common.h
+index 7108255..e2be139 100644
+--- a/libstdc++-v3/src/filesystem/dir-common.h
++++ b/libstdc++-v3/src/filesystem/dir-common.h
+@@ -272,20 +272,30 @@ get_file_type(const std::filesystem::__gnu_posix::dirent& d [[gnu::unused]])
+ #ifdef _GLIBCXX_HAVE_STRUCT_DIRENT_D_TYPE
+   switch (d.d_type)
+   {
++#ifdef DT_BLK
+   case DT_BLK:
+     return file_type::block;
++#endif
++#ifdef DT_CHR
+   case DT_CHR:
+     return file_type::character;
++#endif
+   case DT_DIR:
+     return file_type::directory;
++#ifdef DT_FIFO
+   case DT_FIFO:
+     return file_type::fifo;
++#endif
++#ifdef DT_LNK
+   case DT_LNK:
+     return file_type::symlink;
++#endif
+   case DT_REG:
+     return file_type::regular;
++#ifdef DT_SOCK
+   case DT_SOCK:
+     return file_type::socket;
++#endif
+   case DT_UNKNOWN:
+     return file_type::unknown;
+   default:
+diff --git a/libstdc++-v3/src/filesystem/ops-common.h b/libstdc++-v3/src/filesystem/ops-common.h
+index 304d589..84b82bf 100644
+--- a/libstdc++-v3/src/filesystem/ops-common.h
++++ b/libstdc++-v3/src/filesystem/ops-common.h
+@@ -48,7 +48,6 @@
+ 
+ #ifdef NEED_DO_COPY_FILE
+ # include <filesystem>
+-# include <ext/stdio_filebuf.h>
+ # ifdef _GLIBCXX_USE_COPY_FILE_RANGE
+ #  include <unistd.h> // copy_file_range
+ # endif
+@@ -627,27 +626,43 @@ _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM
+ 	return true;
+       }
+ 
+-    using std::ios;
+-    __gnu_cxx::stdio_filebuf<char> sbin(in.fd, ios::in|ios::binary);
+-    __gnu_cxx::stdio_filebuf<char> sbout(out.fd, ios::out|ios::binary);
+-
+-    if (sbin.is_open())
+-      in.fd = -1;
+-    if (sbout.is_open())
+-      out.fd = -1;
+-
+-    // ostream::operator<<(streambuf*) fails if it extracts no characters,
+-    // so don't try to use it for empty files. But from_st->st_size == 0 for
+-    // some special files (e.g. procfs, see PR libstdc++/108178) so just try
+-    // to read a character to decide whether there is anything to copy or not.
+-    if (sbin.sgetc() != char_traits<char>::eof())
+-      if (!(std::ostream(&sbout) << &sbin))
+-	{
+-	  ec = std::make_error_code(std::errc::io_error);
+-	  return false;
+-	}
+-
+-    if (!sbout.close() || !sbin.close())
++    char buf[256];
++    for (;;)
++      {
++	ssize_t r;
++	do
++	  r = ::read(in.fd, buf, sizeof(buf));
++	while (r < 0 && errno == EINTR);
++
++	if (r == 0)
++	  break;
++	if (r < 0)
++	  {
++	    ec.assign(errno, std::generic_category());
++	    return false;
++	  }
++
++	ssize_t off = 0;
++	while (off < r)
++	  {
++	    ssize_t w = ::write(out.fd, buf + off, static_cast<size_t>(r - off));
++	    if (w < 0)
++	      {
++		if (errno == EINTR)
++		  continue;
++		ec.assign(errno, std::generic_category());
++		return false;
++	      }
++	    if (w == 0)
++	      {
++		ec = std::make_error_code(std::errc::io_error);
++		return false;
++	      }
++	    off += w;
++	  }
++      }
++
++    if (!out.close() || !in.close())
+       {
+ 	ec.assign(errno, std::generic_category());
+ 	return false;

@@ -1,0 +1,32 @@
+diff --git a/libstdc++-v3/src/c++20/Makefile.am b/libstdc++-v3/src/c++20/Makefile.am
+index 5182d51..3ae2794 100644
+--- a/libstdc++-v3/src/c++20/Makefile.am
++++ b/libstdc++-v3/src/c++20/Makefile.am
+@@ -69,9 +69,9 @@ endif
+ 
+ # This needs access to std::text_encoding and to the internals of std::locale.
+ format.lo: format.cc
+-	$(LTCXXCOMPILE) -std=gnu++26 -fno-access-control -c $<
++	$(LTCXXCOMPILE) -std=gnu++26 -fno-access-control -O2 -c $<
+ format.o: format.cc
+-	$(CXXCOMPILE) -std=gnu++26 -fno-access-control -c $<
++	$(CXXCOMPILE) -std=gnu++26 -fno-access-control -O2 -c $<
+ 
+ if ENABLE_EXTERN_TEMPLATE
+ # The unicode literal version of formatters is exported, override the encoding accordingly
+diff --git a/libstdc++-v3/src/c++20/Makefile.in b/libstdc++-v3/src/c++20/Makefile.in
+index 33e3ba2..b9fed6e 100644
+--- a/libstdc++-v3/src/c++20/Makefile.in
++++ b/libstdc++-v3/src/c++20/Makefile.in
+@@ -771,9 +771,9 @@ vpath % $(top_srcdir)/src/c++20
+ 
+ # This needs access to std::text_encoding and to the internals of std::locale.
+ format.lo: format.cc
+-	$(LTCXXCOMPILE) -std=gnu++26 -fno-access-control -c $<
++	$(LTCXXCOMPILE) -std=gnu++26 -fno-access-control -O2 -c $<
+ format.o: format.cc
+-	$(CXXCOMPILE) -std=gnu++26 -fno-access-control -c $<
++	$(CXXCOMPILE) -std=gnu++26 -fno-access-control -O2 -c $<
+ 
+ # The unicode literal version of formatters is exported, override the encoding accordingly
+ @ENABLE_EXTERN_TEMPLATE_TRUE@format-inst.lo: format-inst.cc

@@ -1,0 +1,76 @@
+diff --git a/libstdc++-v3/config/cpu/generic/atomicity_mutex/atomicity.h b/libstdc++-v3/config/cpu/generic/atomicity_mutex/atomicity.h
+index a5472f6..39d0d42 100644
+--- a/libstdc++-v3/config/cpu/generic/atomicity_mutex/atomicity.h
++++ b/libstdc++-v3/config/cpu/generic/atomicity_mutex/atomicity.h
+@@ -23,18 +23,50 @@
+ // <http://www.gnu.org/licenses/>.
+ 
+ #include <ext/atomicity.h>
+-#include <ext/concurrence.h>
+ 
+ namespace
+ {
+-  __gnu_cxx::__mutex&
+-  get_atomic_mutex()
++  inline unsigned int
++  __esp8266_irq_save() noexcept
+   {
+-    static __gnu_cxx::__mutex atomic_mutex;
+-    return atomic_mutex;
++    unsigned int __ps;
++    __asm__ __volatile__("rsil %0, 15" : "=a"(__ps) :: "memory");
++    return __ps;
++  }
++
++  inline void
++  __esp8266_irq_restore(unsigned int __ps) noexcept
++  {
++    __asm__ __volatile__("wsr.ps %0; rsync" :: "a"(__ps) : "memory");
+   }
+ } // anonymous namespace
+ 
++extern "C" bool
++__esp8266_atomic_compare_exchange_4(volatile void* __mem, void* __expected,
++                                    unsigned int __desired,
++                                    int /*__success_memorder*/,
++                                    int /*__failure_memorder*/) noexcept
++  __asm__("__atomic_compare_exchange_4");
++
++extern "C" bool
++__esp8266_atomic_compare_exchange_4(volatile void* __mem, void* __expected,
++                                    unsigned int __desired,
++                                    int /*__success_memorder*/,
++                                    int /*__failure_memorder*/) noexcept
++{
++  unsigned int __ps = __esp8266_irq_save();
++  volatile unsigned int* __ptr = static_cast<volatile unsigned int*>(__mem);
++  unsigned int* __exp = static_cast<unsigned int*>(__expected);
++  unsigned int __cur = *__ptr;
++  bool __ok = (__cur == *__exp);
++  if (__ok)
++    *__ptr = __desired;
++  else
++    *__exp = __cur;
++  __esp8266_irq_restore(__ps);
++  return __ok;
++}
++
+ namespace __gnu_cxx _GLIBCXX_VISIBILITY(default)
+ {
+ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+@@ -43,11 +75,11 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+   __attribute__ ((__unused__))
+   __exchange_and_add(volatile _Atomic_word* __mem, int __val) throw ()
+   {
+-    __gnu_cxx::__scoped_lock sentry(get_atomic_mutex());
+-    // The volatile qualification is meaningless. All changes to the memory
+-    // location happen while this mutex is locked so it's not volatile at all.
++    unsigned int __ps = __esp8266_irq_save();
+     auto __mem2 = const_cast<_Atomic_word*>(__mem);
+-    return __gnu_cxx::__exchange_and_add_single(__mem2, __val);
++    _Atomic_word __res = __gnu_cxx::__exchange_and_add_single(__mem2, __val);
++    __esp8266_irq_restore(__ps);
++    return __res;
+   }
+ 
+   void

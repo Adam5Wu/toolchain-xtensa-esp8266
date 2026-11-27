@@ -25,6 +25,8 @@ ASSETS = {
     },
 }
 
+EXEC_SUFFIXES = {".exe", ".dll", ".so", ".bat", ".cmd", ".sh"}
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -45,10 +47,50 @@ def ensure_asset(cache_dir: Path, spec: dict) -> Path:
     return path
 
 
-def build_package(work_dir: Path, out_zip: Path, manifest_path: Path) -> None:
+def deterministic_zip_info(full: Path, rel: str) -> zipfile.ZipInfo:
+    zi = zipfile.ZipInfo(rel, date_time=(1980, 1, 1, 0, 0, 0))
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.create_system = 3  # Unix attributes, host-independent
+    is_exec = full.suffix.lower() in EXEC_SUFFIXES or (full.parent.name == "bin" and full.suffix == "")
+    mode = 0o100755 if is_exec else 0o100644
+    zi.external_attr = mode << 16
+    return zi
+
+
+def dereference_symlinks(root_dir: Path) -> None:
+    """Replace symlinks created by upstream POSIX tarballs with regular file copies."""
+    stage_resolved = root_dir.resolve()
+    symlinks: list[Path] = []
+    for root, dirs, files in os.walk(root_dir, followlinks=False):
+        for name in dirs + files:
+            p = Path(root) / name
+            if p.is_symlink():
+                symlinks.append(p)
+    for p in symlinks:
+        if not p.is_symlink():
+            continue
+        real = p.resolve(strict=True)
+        real.relative_to(stage_resolved)
+        p.unlink()
+        if real.is_dir():
+            shutil.copytree(real, p, symlinks=False)
+        else:
+            shutil.copy2(real, p)
+
+
+def build_package(
+    work_dir: Path,
+    out_zip: Path,
+    manifest_path: Path,
+    custom_overlay: Path | None = None,
+    prune_picolibc: bool = True,
+) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     host_zip = ensure_asset(work_dir, ASSETS["windows_amd64"])
     multilib_txz = ensure_asset(work_dir, ASSETS["esp8266_multilib"])
+
+    if custom_overlay is not None and not custom_overlay.is_file():
+        raise FileNotFoundError(f"Custom overlay tarball not found: {custom_overlay}")
 
     stage = work_dir / "stage"
     if stage.exists():
@@ -62,21 +104,47 @@ def build_package(work_dir: Path, out_zip: Path, manifest_path: Path) -> None:
     print(f"Overlaying {multilib_txz.name}...")
     with tarfile.open(multilib_txz, "r:xz") as tf:
         tf.extractall(stage, filter="tar")
+    dereference_symlinks(stage)
+
+    if custom_overlay is not None:
+        print(f"Overlaying {custom_overlay.name}...")
+        stage_resolved = stage.resolve()
+        with tarfile.open(custom_overlay, "r:xz") as tf:
+            for member in tf.getmembers():
+                if member.issym() or member.islnk():
+                    raise RuntimeError(f"Unexpected link in custom overlay: {member.name}")
+                if member.isfile():
+                    target = stage / member.name
+                    target.resolve().relative_to(stage_resolved)
+                    if target.is_symlink() or target.is_file():
+                        target.unlink()
+                tf.extract(member, stage, filter="tar")
 
     tc_root = stage / "xtensa-esp-elf"
     if not tc_root.is_dir():
         raise RuntimeError(f"Expected {tc_root} inside extracted toolchain")
+
+    if prune_picolibc:
+        picolibc_dir = tc_root / "picolibc"
+        if picolibc_dir.exists():
+            print(f"Pruning unused {picolibc_dir.name}/...")
+            shutil.rmtree(picolibc_dir)
 
     shutil.copy2(manifest_path, tc_root / "package.json")
 
     out_zip.parent.mkdir(parents=True, exist_ok=True)
     print(f"Packing PlatformIO archive -> {out_zip}...")
     with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
-        for root, _, files in os.walk(tc_root):
+        for root, dirs, files in os.walk(tc_root):
+            dirs.sort()
             for fname in sorted(files):
                 full = Path(root) / fname
+                if full.is_symlink():
+                    raise RuntimeError(f"Unexpected symlink in package staging tree: {full}")
                 rel = full.relative_to(tc_root).as_posix()
-                zout.write(full, rel)
+                zi = deterministic_zip_info(full, rel)
+                with zout.open(zi, "w") as dst, full.open("rb") as src:
+                    shutil.copyfileobj(src, dst, 1024 * 1024)
 
     out_sha = sha256_file(out_zip)
     sha_file = out_zip.with_suffix(out_zip.suffix + ".sha256")
@@ -86,14 +154,34 @@ def build_package(work_dir: Path, out_zip: Path, manifest_path: Path) -> None:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parent.parent
+    manifest_path = repo_root / "package.json"
+    pkg_version = json.loads(manifest_path.read_text(encoding="utf-8"))["version"]
+
     parser = argparse.ArgumentParser(description="Build toolchain-xtensa-esp8266 PlatformIO package")
     parser.add_argument("--work-dir", default=str(repo_root / "build"))
     parser.add_argument(
         "--out",
-        default=str(repo_root / "build" / "toolchain-xtensa-esp8266-windows_amd64-16.2.0.zip"),
+        default=str(repo_root / "build" / f"toolchain-xtensa-esp8266-windows_amd64-{pkg_version}.zip"),
+    )
+    parser.add_argument(
+        "--custom-overlay",
+        default=None,
+        help="Path to esp8266-custom-multilib.tar.xz overlay tarball",
+    )
+    parser.add_argument(
+        "--prune-picolibc",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove unused picolibc/ directory before packing (default: enabled)",
     )
     args = parser.parse_args()
-    build_package(Path(args.work_dir), Path(args.out), repo_root / "package.json")
+    build_package(
+        Path(args.work_dir),
+        Path(args.out),
+        manifest_path,
+        custom_overlay=Path(args.custom_overlay) if args.custom_overlay else None,
+        prune_picolibc=args.prune_picolibc,
+    )
 
 
 if __name__ == "__main__":
