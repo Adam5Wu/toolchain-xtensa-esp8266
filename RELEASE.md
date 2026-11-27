@@ -22,9 +22,10 @@ Both entrypoints invoke `.github/workflows/_build.yml`, which:
 ### `libstdc++-v3` (`scripts/build_libstdcxx_variant.sh`)
 - **`no-exceptions` unwind check**: zero `.eh_frame` and `.gcc_except_table` sections in both `libstdc++.a` and `libsupc++.a` (verified before and after `--strip-debug --enable-deterministic-archives`).
 - **`atomicity.o` symbol check**: zero `class_type_info`, `__cxa_guard`, `__cxa_throw`, or `pthread_mutex` references; defines `T __atomic_compare_exchange_4` with zero `__esp8266_atomic_compare_exchange_4` symbol leakage.
+- **`new_handler.o` symbol & section check**: zero `pthread_mutex`, `__cxa_guard`, `abort`, `_GLOBAL__sub_I_`, `_GLOBAL__sub_D_`, or `__gnu_cxx::__mutex` symbols and zero `.ctors`/`.dtors`/`.init_array`/`.fini_array` sections in both `libstdc++.a` and `libsupc++.a`; defines `std::nothrow`, `std::set_new_handler`, and `std::get_new_handler`.
 - **Filesystem object check**: zero `chmod`, `basic_file`, `ZNSo`, `use_facet`, or `pthread_mutex` references in `(cow-)fs_{dir,ops,path}.o`.
 - **`bits/c++config.h` ABI parity**: `_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY` is `1`; `_GLIBCXX_USE_CHMOD`, `_GLIBCXX_USE_CHDIR`, `_GLIBCXX_USE_GETCWD`, and `_GLIBCXX_HAVE_SYS_STATVFS_H` are unset; strict allowlisted `diff -u` against stock `bits/c++config.h`.
-- **C++23 smoke link**: compiles and links `-std=gnu++23 -Wl,--gc-sections` exercising `std::filesystem` (`path`, `directory_iterator`, `copy_file`, `remove_all`), `std::shared_ptr`, and `std::weak_ptr::lock()`, verifying zero unwanted locale/iostream/pthread/syscall objects.
+- **C++23 smoke links**: compiles and links `-std=gnu++23 -Wl,--gc-sections` tests exercising `std::filesystem` (`path`, `directory_iterator`, `copy_file`, `remove_all`), `std::shared_ptr`, and `std::weak_ptr::lock()`, plus `smoke_nostring`, `smoke_shared`, `smoke_nothrow`, and `smoke_nothrow_only` (verifying `std::nothrow` strips `set_new_handler`/`get_new_handler`/`__new_handler` under `--gc-sections` and zero unwanted locale/iostream/pthread/syscall objects are pulled).
 
 ### `newlib-nano` (`scripts/build_newlib_nano.sh`)
 - **Exact header parity**: `diff -u` against stock `newlib-nano/xtensa-esp-elf/include/newlib.h` must be empty.
@@ -56,5 +57,5 @@ Both entrypoints invoke `.github/workflows/_build.yml`, which:
 
 When rebasing onto a newer Espressif crosstool-NG release:
 1. Update `TAG`, `NEWLIB_TAG`, and pinned SHA-256 digests in `.github/workflows/_build.yml`, `scripts/build_libstdcxx_variant.sh`, `scripts/build_newlib_nano.sh`, and `scripts/build_package.py`.
-2. Rebase `patches/<gcc-tag>/01-esp8266-atomicity.patch`, `02-esp8266-filesystem.patch`, `03-esp8266-shared-ptr.patch`, and `04-esp8266-format-o2.patch` onto the new `espressif/gcc` tag, and `patches/newlib-<newlib-tag>/01-nano-vfprintf-int64-c99-float-placeholder.patch` onto the matching `espressif/newlib-esp32` tag.
+2. Rebase `patches/<gcc-tag>/01-esp8266-atomicity.patch`, `02-esp8266-filesystem.patch`, `03-esp8266-shared-ptr.patch`, `04-esp8266-format-o2.patch`, and `05-esp8266-new-handler.patch` onto the new `espressif/gcc` tag, and `patches/newlib-<newlib-tag>/01-nano-vfprintf-int64-c99-float-placeholder.patch` onto the matching `espressif/newlib-esp32` tag.
 3. Bump `"version"` in `package.json`, update `README.md` if upstream digests changed, and run `build-dev.yml` on `dev` to verify all §4.1 and §4.2 audits pass before cutting a release PR.

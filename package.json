@@ -1,6 +1,6 @@
 {
   "name": "toolchain-xtensa-esp8266",
-  "version": "16.2.0-esp8266.1",
+  "version": "16.2.0-esp8266.2",
   "description": "Espressif xtensa-esp-elf GCC 16.2.0 (esp-16.2.0_20261109) with custom ESP8266 multilib overlay",
   "keywords": [
     "build tools",

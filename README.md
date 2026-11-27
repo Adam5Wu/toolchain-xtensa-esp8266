@@ -20,6 +20,7 @@ Built across `{newlib, newlib-nano} x {rtti, no-rtti} x {exceptions, no-exceptio
 - Do **not** combine `-specs=nano.specs` with `-L <lib_root>/esp8266[/no-rtti]/no-exceptions`: `xtensa-esp-elf/lib/nano.specs` prepends `-L.../newlib-nano/xtensa-esp-elf/lib/%M` inside `*link:` ahead of all user `-L` flags, silently linking `libstdc++.a` and `libsupc++.a` from the exceptions-enabled parent directory. For standalone `newlib-nano` + `-fno-exceptions` builds, omit `-specs=nano.specs`, pass `-isystem <package_dir>/newlib-nano/xtensa-esp-elf/include` when compiling, pass `-L <package_dir>/newlib-nano/xtensa-esp-elf/lib/esp8266[/no-rtti]/no-exceptions` before `-L <package_dir>/newlib-nano/xtensa-esp-elf/lib/esp8266[/no-rtti]` when linking, and link `-lc_nano` (`ESP8266_RTOS_SDK` already uses explicit `-L` paths without `-specs=nano.specs`).
 - **IRQ-safe atomics & `_S_atomic` `shared_ptr`**: configured with `--with-libstdcxx-lock-policy=atomic` (`_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY 1` in `bits/c++config.h`) and patched `atomicity.h` using `rsil 15` / `wsr.ps; rsync` critical sections plus a 5-argument `__atomic_compare_exchange_4` implementation for `std::weak_ptr::lock()`, eliminating `pthread_mutex` / `guard.o` / RTTI pulls from `std::shared_ptr` and `<filesystem>`.
 - **LittleFS / Newlib `<filesystem>`**: removes `<ext/stdio_filebuf.h>` / `<ostream>` (`do_copy_file` uses a 256 B stack buffer with `::read`/`::write`), disables `use_facet<codecvt<wchar_t, ...>>` in `path::_S_convert_loc`, guards optional `DT_*` macros, handles `st_dev == 0 && st_ino == 0` in `equiv_files()`, closes `DIR*` before `rmdir` in `recursive_directory_iterator::__erase()`, and falls back to `::rmdir` on `EISDIR`/`EPERM` in `fs::remove()`.
+- **Constructor-free / IRQ-safe `new_handler.o`**: replaces `__gnu_cxx::__mutex` in `libstdc++-v3/libsupc++/new_handler.cc` with `rsil 15` / `wsr.ps; rsync` critical sections, eliminating `.ctors`/`.dtors`, static BSS, and `pthread_mutex` references from `std::nothrow`, `std::set_new_handler`, and `std::get_new_handler` (allowing `--gc-sections` to strip the handler pointer when only `std::nothrow` is referenced).
 
 ### 2. Patched `newlib-nano` (`libc_nano.a`)
 - **Unconditional 64-bit integer & C99 formatting**: enables `%lld`, `%llu`, `%llx`, `%llX`, `%llo`, `%jd`, `%lln`, `%z`, `%t`, and true 8-bit `%hh` (`CHARINT`) directly inside `nano-vfprintf` with zero extra linker flags (targeting ESP8266 Mask ROM `__udivdi3`/`__umoddi3`).
@@ -36,7 +37,7 @@ Built across `{newlib, newlib-nano} x {rtti, no-rtti} x {exceptions, no-exceptio
 Release archives are built and attested on GitHub Actions. Consumers can verify the Windows archive against SLSA build provenance using the GitHub CLI:
 
 ```sh
-gh attestation verify toolchain-xtensa-esp8266-windows_amd64-16.2.0-esp8266.1.zip -R Adam5Wu/toolchain-xtensa-esp8266
+gh attestation verify toolchain-xtensa-esp8266-windows_amd64-16.2.0-esp8266.2.zip -R Adam5Wu/toolchain-xtensa-esp8266
 ```
 
 See [RELEASE.md](RELEASE.md) for the CI gating, ELF/ABI audit suite, and release process.
