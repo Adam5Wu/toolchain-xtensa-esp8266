@@ -73,6 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$TAG_NAME" \
+            -R "$GITHUB_REPOSITORY" \
             --draft \
             --title "$TAG_NAME (xtensa-esp-elf GCC $PKG_VER)" \
             --notes "Automated SLSA-attested draft release for $TAG_NAME (commit $GITHUB_SHA)." \
