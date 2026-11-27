@@ -77,7 +77,7 @@ index bdcc9b2..5107856 100644
              n = _printf_float (data, &prt_data, fp, pfunc, &ap_copy);
  	}
 diff --git a/newlib/libc/stdio/nano-vfprintf_i.c b/newlib/libc/stdio/nano-vfprintf_i.c
-index f7da952..06178cc 100644
+index f7da952..b82a7ba 100644
 --- a/newlib/libc/stdio/nano-vfprintf_i.c
 +++ b/newlib/libc/stdio/nano-vfprintf_i.c
 @@ -104,6 +104,46 @@ _printf_common (struct _reent *data,
@@ -106,22 +106,22 @@ index f7da952..06178cc 100644
 +}
 +#endif
 +
-+static u_quad_t
++static __attribute__((__noinline__)) u_quad_t
 +_get_int_arg (int flags, va_list *ap, int is_signed)
 +{
 +  if (flags & QUADINT)
 +    return GET_ARG (N, (*ap), u_quad_t);
++#if LONG_MAX != INT_MAX
 +  if (flags & LONGINT)
 +    return is_signed ? (u_quad_t)(quad_t)GET_ARG (N, (*ap), long)
 +		     : (u_quad_t)GET_ARG (N, (*ap), u_long);
++#endif
++  u_int val = GET_ARG (N, (*ap), u_int);
 +  if (flags & SHORTINT)
-+    return is_signed ? (u_quad_t)(quad_t)(short)GET_ARG (N, (*ap), int)
-+		     : (u_quad_t)(u_short)GET_ARG (N, (*ap), int);
++    return is_signed ? (u_quad_t)(quad_t)(short)val : (u_quad_t)(u_short)val;
 +  if (flags & CHARINT)
-+    return is_signed ? (u_quad_t)(quad_t)(signed char)GET_ARG (N, (*ap), int)
-+		     : (u_quad_t)(unsigned char)GET_ARG (N, (*ap), int);
-+  return is_signed ? (u_quad_t)(quad_t)GET_ARG (N, (*ap), int)
-+		   : (u_quad_t)GET_ARG (N, (*ap), u_int);
++    return is_signed ? (u_quad_t)(quad_t)(signed char)val : (u_quad_t)(unsigned char)val;
++  return is_signed ? (u_quad_t)(quad_t)(int)val : (u_quad_t)val;
 +}
 +
  int

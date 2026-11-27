@@ -102,8 +102,8 @@ cd "$BUILD_DIR"
 
 COMMON_FLAGS="-mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals $OPT_FLAG -ffunction-sections -fdata-sections $INC_EXTRA"
 
-export CC="xtensa-esp-elf-gcc"
-export CXX="xtensa-esp-elf-g++"
+export CC="xtensa-esp-elf-gcc -mdynconfig=xtensa_esp8266.so"
+export CXX="xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so"
 export AR="xtensa-esp-elf-ar"
 export ARFLAGS="crD"
 export RANLIB="xtensa-esp-elf-ranlib"

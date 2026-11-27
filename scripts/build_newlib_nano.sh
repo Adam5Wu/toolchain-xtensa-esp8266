@@ -130,6 +130,10 @@ if xtensa-esp-elf-nm -u "$LIBC_NANO" | awk '/^(libc_a-)?nano-vfprintf_i\.o:/{p=1
 fi
 
 echo "=== Audit 3: nano-vfprintf .text delta budget (<= +350 B) ==="
+echo "--- Stock libc_nano.a nano-vfprintf sizes ---"
+xtensa-esp-elf-size "$STOCK_LIBC_NANO" | grep -E 'text\s+data|nano-(s?vfprintf|vfprintf_i)\.o'
+echo "--- Patched libc_nano.a nano-vfprintf sizes ---"
+xtensa-esp-elf-size "$LIBC_NANO" | grep -E 'text\s+data|nano-(s?vfprintf|vfprintf_i)\.o'
 STOCK_TEXT=$(xtensa-esp-elf-size "$STOCK_LIBC_NANO" | awk '/nano-(s?vfprintf|vfprintf_i)\.o/{sum += $1} END {print sum+0}')
 NEW_TEXT=$(xtensa-esp-elf-size "$LIBC_NANO" | awk '/nano-(s?vfprintf|vfprintf_i)\.o/{sum += $1} END {print sum+0}')
 DELTA=$((NEW_TEXT - STOCK_TEXT))
