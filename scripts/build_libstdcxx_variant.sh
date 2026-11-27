@@ -203,6 +203,41 @@ if [[ "$RTTI" == "no-rtti" ]]; then
   fi
 fi
 
+echo "=== Audit 2c: new_handler.o symbol & section check ==="
+NH_TMP="$WORKDIR/nh_audit"
+for lib in "$LIBSTD" "$LIBSUP"; do
+  if ! xtensa-esp-elf-ar t "$lib" | grep -Fx 'new_handler.o' >/dev/null; then
+    echo "ERROR: new_handler.o missing from $lib" >&2
+    exit 1
+  fi
+  if xtensa-esp-elf-nm -u "$lib" | awk '/^new_handler\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | \
+      grep -E 'pthread_mutex|__cxa_guard|abort'; then
+    echo "ERROR: Unexpected undefined reference in new_handler.o of $lib" >&2
+    exit 1
+  fi
+  if xtensa-esp-elf-nm "$lib" | awk '/^new_handler\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | \
+      grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|__gnu_cxx.*__mutex'; then
+    echo "ERROR: Static ctor/dtor or __gnu_cxx::__mutex found in new_handler.o of $lib" >&2
+    exit 1
+  fi
+  NH_DEF="$(xtensa-esp-elf-nm --defined-only "$lib" | awk '/^new_handler\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p')"
+  for sym in ' R _ZSt7nothrow$' ' T _ZSt15set_new_handlerPFvvE$' ' T _ZSt15get_new_handlerv$'; do
+    printf '%s\n' "$NH_DEF" | grep -E "$sym" >/dev/null || {
+      echo "ERROR: Expected symbol ($sym) missing from new_handler.o of $lib" >&2
+      exit 1
+    }
+  done
+  rm -rf "$NH_TMP"
+  mkdir -p "$NH_TMP"
+  LIB_ABS="$(cd "$(dirname "$lib")" && pwd)/$(basename "$lib")"
+  (cd "$NH_TMP" && xtensa-esp-elf-ar x "$LIB_ABS" new_handler.o)
+  if xtensa-esp-elf-readelf -SW "$NH_TMP/new_handler.o" | grep -E '\.(ctors|dtors|init_array|fini_array)'; then
+    echo "ERROR: Constructor/destructor section found in new_handler.o of $lib" >&2
+    exit 1
+  fi
+  rm -rf "$NH_TMP"
+done
+
 echo "=== Audit 3: (cow-)fs_*.o symbol check ==="
 if xtensa-esp-elf-nm -u "$LIBSTD" | awk '/^(cow-)?fs_(dir|ops|path)\.o:/{p=1} /^$/{p=0} p' | \
     grep -E 'chmod|basic_file|ZNSo|use_facet|pthread_mutex'; then
@@ -510,6 +545,146 @@ xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_shared.elf" | grep -q ' T __a
   echo "ERROR: __atomic_compare_exchange_4 not linked in smoke_shared.elf" >&2
   exit 1
 }
+
+echo "=== Audit 6d: smoke_nothrow & smoke_nothrow_only (GC + ctor/pthread check) ==="
+cat > "$SMOKE_DIR/smoke_nothrow.cpp" <<'EOF'
+#include <cstdlib>
+#include <new>
+
+void* operator new(std::size_t s) { return std::malloc(s ? s : 1); }
+void* operator new[](std::size_t s) { return std::malloc(s ? s : 1); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+
+static void dummy_new_handler() {}
+
+int main() {
+  void* p = ::operator new(16, std::nothrow);
+  if (!p) return 1;
+  *static_cast<volatile char*>(p) = 1;
+  auto prev = std::set_new_handler(&dummy_new_handler);
+  auto cur = std::get_new_handler();
+  std::set_new_handler(prev);
+  ::operator delete(p);
+  return (cur == &dummy_new_handler) ? 0 : 2;
+}
+EOF
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  -std=gnu++23 "$OPT_FLAG" $RTTI_FLAGS $EXCEPT_FLAGS -ffunction-sections -fdata-sections \
+  -isystem "$BUILD_DIR/include/xtensa-esp-elf" \
+  -isystem "$BUILD_DIR/include" \
+  $INC_EXTRA \
+  -c "$SMOKE_DIR/smoke_nothrow.cpp" -o "$SMOKE_DIR/smoke_nothrow.o"
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  $RTTI_FLAGS $EXCEPT_FLAGS \
+  -L"$SMOKE_DIR/lib" -L"$LIB_ROOT/$RTTI_SUB" \
+  -specs=nosys.specs -Wl,--gc-sections -Wl,-T,"$SMOKE_DIR/smoke.ld" -Wl,-Map="$SMOKE_DIR/smoke_nothrow.map" \
+  "$SMOKE_DIR/smoke_nothrow.o" \
+  -o "$SMOKE_DIR/smoke_nothrow.elf"
+
+grep -F "$SMOKE_DIR/lib/libstdc++.a(new_handler.o)" "$SMOKE_DIR/smoke_nothrow.map" >/dev/null || {
+  echo "ERROR: smoke_nothrow did not pull new_handler.o from newly built libstdc++.a" >&2
+  exit 1
+}
+for sym in ' R _ZSt7nothrow$' ' T _ZSt15set_new_handlerPFvvE$' ' T _ZSt15get_new_handlerv$'; do
+  xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E "$sym" >/dev/null || {
+    echo "ERROR: Expected symbol ($sym) missing in smoke_nothrow.elf" >&2
+    exit 1
+  }
+done
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E '_GLOBAL__sub_(I|D)_.*(nothrow|new_handler)'; then
+  echo "ERROR: Static ctor/dtor from new_handler.o in smoke_nothrow.elf" >&2
+  exit 1
+fi
+if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_nothrow.map" | \
+      grep -E "$BANNED_NOEXC_OBJS"; then
+    echo "ERROR: pthread or EH object pulled in no-exceptions smoke_nothrow link" >&2
+    exit 1
+  fi
+  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|pthread_mutex|get_mutex|__gnu_cxx.*__mutex|__cxa_guard_acquire|__cxa_throw'; then
+    echo "ERROR: Unexpected ctor / pthread / guard / throw symbol in no-exceptions smoke_nothrow.elf" >&2
+    exit 1
+  fi
+  CTORS_HEX=$(xtensa-esp-elf-readelf -S "$SMOKE_DIR/smoke_nothrow.elf" | awk '/\.ctors /{for(i=1;i<=NF;i++) if($i=="PROGBITS") {print $(i+3); exit}}')
+  if [[ -n "${CTORS_HEX:-}" && $((16#$CTORS_HEX)) -gt 8 ]]; then
+    echo "ERROR: .ctors size (0x${CTORS_HEX} > 8 B) in no-exceptions smoke_nothrow.elf" >&2
+    exit 1
+  fi
+fi
+
+cat > "$SMOKE_DIR/smoke_nothrow_only.cpp" <<'EOF'
+#include <cstdlib>
+#include <new>
+
+void* operator new(std::size_t s) { return std::malloc(s ? s : 1); }
+void* operator new[](std::size_t s) { return std::malloc(s ? s : 1); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+
+int main() {
+  void* p = ::operator new(16, std::nothrow);
+  if (!p) return 1;
+  *static_cast<volatile char*>(p) = 1;
+  ::operator delete(p);
+  return 0;
+}
+EOF
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  -std=gnu++23 "$OPT_FLAG" $RTTI_FLAGS $EXCEPT_FLAGS -ffunction-sections -fdata-sections \
+  -isystem "$BUILD_DIR/include/xtensa-esp-elf" \
+  -isystem "$BUILD_DIR/include" \
+  $INC_EXTRA \
+  -c "$SMOKE_DIR/smoke_nothrow_only.cpp" -o "$SMOKE_DIR/smoke_nothrow_only.o"
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  $RTTI_FLAGS $EXCEPT_FLAGS \
+  -L"$SMOKE_DIR/lib" -L"$LIB_ROOT/$RTTI_SUB" \
+  -specs=nosys.specs -Wl,--gc-sections -Wl,-T,"$SMOKE_DIR/smoke.ld" -Wl,-Map="$SMOKE_DIR/smoke_nothrow_only.map" \
+  "$SMOKE_DIR/smoke_nothrow_only.o" \
+  -o "$SMOKE_DIR/smoke_nothrow_only.elf"
+
+grep -F "$SMOKE_DIR/lib/libstdc++.a(new_handler.o)" "$SMOKE_DIR/smoke_nothrow_only.map" >/dev/null || {
+  echo "ERROR: smoke_nothrow_only did not pull new_handler.o from newly built libstdc++.a" >&2
+  exit 1
+}
+if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_nothrow_only.map" | \
+    grep -E 'new_op\.o'; then
+  echo "ERROR: new_op.o unexpectedly pulled in smoke_nothrow_only link" >&2
+  exit 1
+fi
+xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | grep -E ' R _ZSt7nothrow$' >/dev/null || {
+  echo "ERROR: _ZSt7nothrow missing in smoke_nothrow_only.elf" >&2
+  exit 1
+}
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | \
+    grep -E 'set_new_handler|get_new_handler|__new_handler|_GLOBAL__sub_(I|D)_.*(nothrow|new_handler)'; then
+  echo "ERROR: set_new_handler / get_new_handler / __new_handler / ctor was not GC-stripped in smoke_nothrow_only.elf" >&2
+  exit 1
+fi
+if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_nothrow_only.map" | \
+      grep -E "$BANNED_NOEXC_OBJS"; then
+    echo "ERROR: pthread or EH object pulled in no-exceptions smoke_nothrow_only link" >&2
+    exit 1
+  fi
+  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|pthread_mutex|get_mutex|__gnu_cxx.*__mutex|__cxa_guard_acquire|__cxa_throw'; then
+    echo "ERROR: Unexpected ctor / pthread / guard / throw symbol in no-exceptions smoke_nothrow_only.elf" >&2
+    exit 1
+  fi
+  CTORS_HEX=$(xtensa-esp-elf-readelf -S "$SMOKE_DIR/smoke_nothrow_only.elf" | awk '/\.ctors /{for(i=1;i<=NF;i++) if($i=="PROGBITS") {print $(i+3); exit}}')
+  if [[ -n "${CTORS_HEX:-}" && $((16#$CTORS_HEX)) -gt 8 ]]; then
+    echo "ERROR: .ctors size (0x${CTORS_HEX} > 8 B) in no-exceptions smoke_nothrow_only.elf" >&2
+    exit 1
+  fi
+fi
 
 if [[ -n "${OUT_DIR:-}" ]]; then
   mkdir -p "$OUT_DIR/bits"
