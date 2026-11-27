@@ -213,8 +213,12 @@ xtensa-esp-elf-gcc -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-lite
   -specs=nosys.specs -Wl,--gc-sections -Wl,-u,_printf_float -Wl,-Map="$SMOKE_DIR/smoke_float.map" \
   "$SMOKE_DIR/smoke.o" -o "$SMOKE_DIR/smoke_float.elf"
 
-xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_float.elf" | grep -q ' T _printf_float$' || {
+xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_float.elf" | grep -q ' [TW] _printf_float$' || {
   echo "ERROR: _printf_float not linked under -Wl,-u,_printf_float" >&2
+  exit 1
+}
+xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_float.elf" | grep -q ' T _dtoa_r$' || {
+  echo "ERROR: _dtoa_r not linked under -Wl,-u,_printf_float" >&2
   exit 1
 }
 

@@ -95,6 +95,10 @@ if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
 fi
 
 # 4. Configure & build libstdc++-v3 standalone (matching Espressif ABI + atomic lock policy)
+# Provide top-level builddir libgcc/gthr-default.h so GLIBCXX_CHECK_GTHREADS detects __GTHREADS_CXX0X
+mkdir -p "$WORKDIR/libgcc"
+cp "$GCC_WORK/libgcc/gthr-posix.h" "$WORKDIR/libgcc/gthr-default.h"
+
 BUILD_DIR="$WORKDIR/build-libstdcxx"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
@@ -210,8 +214,11 @@ int utime(const char *path, const struct utimbuf *times) { (void)path; (void)tim
 EOF
 
 cat > "$SMOKE_DIR/smoke.cpp" <<'EOF'
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <new>
+#include <string>
 #include <system_error>
 
 #if !defined(_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY) || _GLIBCXX_HAVE_ATOMIC_LOCK_POLICY != 1
@@ -219,9 +226,18 @@ cat > "$SMOKE_DIR/smoke.cpp" <<'EOF'
 #endif
 static_assert(std::__default_lock_policy == std::_S_atomic, "Expected _S_atomic lock policy");
 
+void* operator new(std::size_t s) { return std::malloc(s ? s : 1); }
+void* operator new[](std::size_t s) { return std::malloc(s ? s : 1); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+
 int main() {
   namespace fs = std::filesystem;
-  fs::path p("/tmp/test");
+  std::string base("/tmp/test");
+  base += "/sub/file_long_enough_to_heap_alloc";
+  fs::path p(base);
   std::error_code ec;
   for (fs::directory_iterator it(p, ec), end; !ec && it != end; it.increment(ec)) {
     (void)it->path();
@@ -232,7 +248,7 @@ int main() {
   auto sp = std::make_shared<int>(42);
   std::weak_ptr<int> wp = sp;
   auto locked = wp.lock();
-  return locked ? *locked : 0;
+  return locked ? *locked : (int)base.size();
 }
 EOF
 
@@ -257,12 +273,18 @@ grep -q "$SMOKE_DIR/lib/libstdc++.a" "$SMOKE_DIR/smoke.map" || {
   echo "ERROR: Smoke link did not use newly built libstdc++.a" >&2
   exit 1
 }
-if grep -E 'locale-inst\.o|wlocale-inst\.o|new_handler\.o|guard\.o|basic_file|ostream|pthread_mutex|libpthread|chmod\.o|chdir\.o|getcwd\.o|statvfs\.o' "$SMOKE_DIR/smoke.map"; then
+if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke.map" | \
+    grep -E 'locale-inst\.o|wlocale-inst\.o|new_handler\.o|guard\.o|basic_file|ostream|format\.o|chmod\.o|chdir\.o|getcwd\.o|statvfs\.o'; then
   echo "ERROR: Unwanted object pulled in smoke link" >&2
   exit 1
 fi
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke.elf" | grep -E 'pthread_mutex|get_mutex'; then
+  echo "ERROR: pthread_mutex / get_mutex linked into smoke.elf" >&2
+  exit 1
+fi
 if [[ "$RTTI" == "no-rtti" && "$EXCEPTIONS" == "no-exceptions" ]]; then
-  if grep -E 'class_type_info\.o|si_class_type_info\.o|eh_personality\.o|eh_throw\.o' "$SMOKE_DIR/smoke.map"; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke.map" | \
+      grep -E 'class_type_info\.o|si_class_type_info\.o|eh_personality\.o|eh_throw\.o'; then
     echo "ERROR: RTTI or EH object pulled in no-rtti/no-exceptions smoke link" >&2
     exit 1
   fi
