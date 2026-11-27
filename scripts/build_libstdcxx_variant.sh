@@ -262,10 +262,22 @@ xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-lite
   $INC_EXTRA \
   -c "$SMOKE_DIR/smoke.cpp" -o "$SMOKE_DIR/smoke.o"
 
+xtensa-esp-elf-ld --verbose | awk '
+  /^==================================================$/ { s++; next }
+  s == 1 {
+    gsub(/KEEP \(\*\(\.xt\.lit \.xt\.lit\.\* \.gnu\.linkonce\.p\.\*\)\)/, "*(.xt.lit .xt.lit.* .gnu.linkonce.p.*)")
+    gsub(/KEEP \(\*\(\.xt\.insn \.gnu\.linkonce\.x\.\*\)\)/, "*(.xt.insn .gnu.linkonce.x.*)")
+    gsub(/KEEP \(\*\(\.xt\.prop \.xt\.prop\.\* \.gnu\.linkonce\.prop\.\*\)\)/, "*(.xt.prop .xt.prop.* .gnu.linkonce.prop.*)")
+    print
+  }
+' > "$SMOKE_DIR/smoke.ld"
+test -s "$SMOKE_DIR/smoke.ld"
+! grep -q 'KEEP (\*(\.xt\.' "$SMOKE_DIR/smoke.ld"
+
 xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
   $RTTI_FLAGS $EXCEPT_FLAGS \
   -L"$SMOKE_DIR/lib" -L"$LIB_ROOT/$RTTI_SUB" \
-  -specs=nosys.specs -Wl,--gc-sections -Wl,-Map="$SMOKE_DIR/smoke.map" \
+  -specs=nosys.specs -Wl,--gc-sections -Wl,-T,"$SMOKE_DIR/smoke.ld" -Wl,-Map="$SMOKE_DIR/smoke.map" \
   "$SMOKE_DIR/smoke.o" "$SMOKE_DIR/smoke_stubs.o" \
   -o "$SMOKE_DIR/smoke.elf"
 
