@@ -596,8 +596,8 @@ for sym in ' R _ZSt7nothrow$' ' T _ZSt15set_new_handlerPFvvE$' ' T _ZSt15get_new
     exit 1
   }
 done
-if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E '_GLOBAL__sub_(I|D)_.*(nothrow|new_handler)|__gnu_cxx.*__mutex'; then
-  echo "ERROR: Static ctor/dtor or __gnu_cxx::__mutex from new_handler.o in smoke_nothrow.elf" >&2
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E '_GLOBAL__sub_(I|D)_.*(nothrow|new_handler)'; then
+  echo "ERROR: Static ctor/dtor from new_handler.o in smoke_nothrow.elf" >&2
   exit 1
 fi
 if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
@@ -606,7 +606,7 @@ if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
     echo "ERROR: pthread or EH object pulled in no-exceptions smoke_nothrow link" >&2
     exit 1
   fi
-  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|pthread_mutex|get_mutex|__cxa_guard_acquire|__cxa_throw'; then
+  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow.elf" | grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|pthread_mutex|get_mutex|__gnu_cxx.*__mutex|__cxa_guard_acquire|__cxa_throw'; then
     echo "ERROR: Unexpected ctor / pthread / guard / throw symbol in no-exceptions smoke_nothrow.elf" >&2
     exit 1
   fi
@@ -665,7 +665,7 @@ xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | grep -E '
   exit 1
 }
 if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | \
-    grep -E 'set_new_handler|get_new_handler|__new_handler|_GLOBAL__sub_(I|D)_.*(nothrow|new_handler)|__gnu_cxx.*__mutex'; then
+    grep -E 'set_new_handler|get_new_handler|__new_handler|_GLOBAL__sub_(I|D)_.*(nothrow|new_handler)'; then
   echo "ERROR: set_new_handler / get_new_handler / __new_handler / ctor was not GC-stripped in smoke_nothrow_only.elf" >&2
   exit 1
 fi
@@ -675,7 +675,7 @@ if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
     echo "ERROR: pthread or EH object pulled in no-exceptions smoke_nothrow_only link" >&2
     exit 1
   fi
-  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|pthread_mutex|get_mutex|__cxa_guard_acquire|__cxa_throw'; then
+  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nothrow_only.elf" | grep -E '_GLOBAL__sub_I_|_GLOBAL__sub_D_|pthread_mutex|get_mutex|__gnu_cxx.*__mutex|__cxa_guard_acquire|__cxa_throw'; then
     echo "ERROR: Unexpected ctor / pthread / guard / throw symbol in no-exceptions smoke_nothrow_only.elf" >&2
     exit 1
   fi
