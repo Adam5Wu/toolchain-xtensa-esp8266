@@ -175,10 +175,45 @@ for lib in "$LIBSTD" "$LIBSUP"; do
   fi
 done
 
+echo "=== Audit 2b: shared_ptr_tag.o vs shared_ptr.o split check ==="
+if ! xtensa-esp-elf-ar t "$LIBSTD" | grep -qx 'shared_ptr_tag\.o'; then
+  echo "ERROR: shared_ptr_tag.o missing from $LIBSTD" >&2
+  exit 1
+fi
+xtensa-esp-elf-nm --defined-only "$LIBSTD" | awk '/^shared_ptr_tag\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | \
+  grep -q ' T _ZNSt19_Sp_make_shared_tag5_S_eqERKSt9type_info$' || {
+    echo "ERROR: _Sp_make_shared_tag::_S_eq missing from shared_ptr_tag.o of $LIBSTD" >&2
+    exit 1
+  }
+if xtensa-esp-elf-nm --defined-only "$LIBSTD" | awk '/^shared_ptr\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | \
+    grep -q '_ZNSt19_Sp_make_shared_tag5_S_eqERKSt9type_info'; then
+  echo "ERROR: _Sp_make_shared_tag::_S_eq still defined in shared_ptr.o of $LIBSTD" >&2
+  exit 1
+fi
+if xtensa-esp-elf-nm -u "$LIBSTD" | awk '/^shared_ptr_tag\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | \
+    grep -E '__cxa_guard|pthread_mutex|_ZNSt9exceptionD2Ev|_ZSt11_Hash_bytes'; then
+  echo "ERROR: Unexpected dependency in shared_ptr_tag.o of $LIBSTD" >&2
+  exit 1
+fi
+if [[ "$RTTI" == "no-rtti" ]]; then
+  TAG_UNDEF="$(xtensa-esp-elf-nm -u "$LIBSTD" | awk '/^shared_ptr_tag\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | tr -d '[:space:]')"
+  if [[ -n "$TAG_UNDEF" ]]; then
+    echo "ERROR: Expected empty nm -u for no-rtti shared_ptr_tag.o, got: $TAG_UNDEF" >&2
+    exit 1
+  fi
+fi
+
 echo "=== Audit 3: (cow-)fs_*.o symbol check ==="
 if xtensa-esp-elf-nm -u "$LIBSTD" | awk '/^(cow-)?fs_(dir|ops|path)\.o:/{p=1} /^$/{p=0} p' | \
     grep -E 'chmod|basic_file|ZNSo|use_facet|pthread_mutex'; then
   echo "ERROR: Unexpected dependency in filesystem objects of $LIBSTD" >&2
+  exit 1
+fi
+
+echo "=== Audit 3b: format.o _M_dispose symbol check ==="
+if xtensa-esp-elf-nm --defined-only "$LIBSTD" | awk '/^format\.o:/{p=1; next} /^$/ || /^[^[:space:]].*:$/{p=0} p' | \
+    grep -q '_M_dispose'; then
+  echo "ERROR: format.o unexpectedly defines basic_string::_M_dispose" >&2
   exit 1
 fi
 
@@ -288,12 +323,19 @@ grep -q "$SMOKE_DIR/lib/libstdc++.a" "$SMOKE_DIR/smoke.map" || {
   echo "ERROR: Smoke link did not use newly built libstdc++.a" >&2
   exit 1
 }
+BANNED_FS_OBJS='shared_ptr\.o|guard\.o|locale-inst\.o|wlocale-inst\.o|cxx11-locale-inst\.o|cxx11-wlocale-inst\.o|new_handler\.o|basic_file|ostream|format\.o|chmod\.o|chdir\.o|getcwd\.o|statvfs\.o'
+BANNED_NOEXC_OBJS='pthread_mutex|pthread_cond|pthread_once|libpthread\.a|eh_personality\.o|eh_throw\.o'
 if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke.map" | \
-    grep -E 'locale-inst\.o|wlocale-inst\.o|new_handler\.o|basic_file|ostream|format\.o|chmod\.o|chdir\.o|getcwd\.o|statvfs\.o'; then
+    grep -E "$BANNED_FS_OBJS"; then
   echo "ERROR: Unwanted object pulled in smoke link" >&2
   exit 1
 fi
 if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke.map" | \
+      grep -E "$BANNED_NOEXC_OBJS"; then
+    echo "ERROR: pthread or EH object pulled in no-exceptions smoke link" >&2
+    exit 1
+  fi
   if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke.elf" | grep -E 'pthread_mutex|get_mutex|__cxa_guard_acquire|__cxa_throw'; then
     echo "ERROR: pthread_mutex / get_mutex / guard / throw linked into no-exceptions smoke.elf" >&2
     exit 1
@@ -317,6 +359,155 @@ if [[ "$RTTI" == "no-rtti" && "$EXCEPTIONS" == "no-exceptions" ]]; then
 fi
 xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke.elf" | grep -q ' T __atomic_compare_exchange_4$' || {
   echo "ERROR: __atomic_compare_exchange_4 not linked in smoke.elf" >&2
+  exit 1
+}
+
+echo "=== Audit 6b: smoke_nostring.cpp (no TU std::string) link & .ctors check ==="
+cat > "$SMOKE_DIR/smoke_nostring.cpp" <<'EOF'
+#include <cstdlib>
+#include <filesystem>
+#include <memory>
+#include <new>
+#include <system_error>
+
+void* operator new(std::size_t s) { return std::malloc(s ? s : 1); }
+void* operator new[](std::size_t s) { return std::malloc(s ? s : 1); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+
+int main() {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path p("/a/b/");
+  (void)fs::exists(p, ec);
+  fs::remove(p, ec);
+  auto sp = std::shared_ptr<int>(new int(7));
+  std::weak_ptr<int> wp = sp;
+  auto lp = wp.lock();
+  return (lp ? *lp : 0) + ec.value();
+}
+EOF
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  -std=gnu++23 "$OPT_FLAG" $RTTI_FLAGS $EXCEPT_FLAGS -ffunction-sections -fdata-sections \
+  -isystem "$BUILD_DIR/include/xtensa-esp-elf" \
+  -isystem "$BUILD_DIR/include" \
+  $INC_EXTRA \
+  -c "$SMOKE_DIR/smoke_nostring.cpp" -o "$SMOKE_DIR/smoke_nostring.o"
+
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nostring.o" | grep -q '_M_dispose'; then
+  echo "ERROR: smoke_nostring.o unexpectedly emitted _M_dispose (invalidates nostring test)" >&2
+  exit 1
+fi
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  $RTTI_FLAGS $EXCEPT_FLAGS \
+  -L"$SMOKE_DIR/lib" -L"$LIB_ROOT/$RTTI_SUB" \
+  -specs=nosys.specs -Wl,--gc-sections -Wl,-T,"$SMOKE_DIR/smoke.ld" -Wl,-Map="$SMOKE_DIR/smoke_nostring.map" \
+  "$SMOKE_DIR/smoke_nostring.o" "$SMOKE_DIR/smoke_stubs.o" \
+  -o "$SMOKE_DIR/smoke_nostring.elf"
+
+grep -q "$SMOKE_DIR/lib/libstdc++.a" "$SMOKE_DIR/smoke_nostring.map" || {
+  echo "ERROR: smoke_nostring link did not use newly built libstdc++.a" >&2
+  exit 1
+}
+if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_nostring.map" | \
+    grep -E "$BANNED_FS_OBJS"; then
+  echo "ERROR: Unwanted object pulled in smoke_nostring link" >&2
+  exit 1
+fi
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nostring.elf" | grep -E '_GLOBAL__sub_I_.*(ctype_byname|nothrow)'; then
+  echo "ERROR: Unexpected locale/nothrow static constructor in smoke_nostring.elf" >&2
+  exit 1
+fi
+xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nostring.elf" | grep -q ' T __atomic_compare_exchange_4$' || {
+  echo "ERROR: __atomic_compare_exchange_4 not linked in smoke_nostring.elf" >&2
+  exit 1
+}
+if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_nostring.map" | \
+      grep -E "$BANNED_NOEXC_OBJS"; then
+    echo "ERROR: pthread or EH object pulled in no-exceptions smoke_nostring link" >&2
+    exit 1
+  fi
+  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nostring.elf" | grep -E '_GLOBAL__sub_I_|pthread_mutex|get_mutex|__cxa_guard_acquire|__cxa_throw'; then
+    echo "ERROR: Unexpected ctor / pthread / guard / throw symbol in no-exceptions smoke_nostring.elf" >&2
+    exit 1
+  fi
+  CTORS_HEX=$(xtensa-esp-elf-readelf -S "$SMOKE_DIR/smoke_nostring.elf" | awk '/\.ctors /{for(i=1;i<=NF;i++) if($i=="PROGBITS") {print $(i+3); exit}}')
+  if [[ -n "${CTORS_HEX:-}" && $((16#$CTORS_HEX)) -gt 8 ]]; then
+    echo "ERROR: .ctors size (0x${CTORS_HEX} > 8 B) in no-exceptions smoke_nostring.elf" >&2
+    exit 1
+  fi
+fi
+if [[ "$RTTI" == "no-rtti" && "$EXCEPTIONS" == "no-exceptions" ]]; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_nostring.map" | \
+      grep -E 'class_type_info\.o|si_class_type_info\.o|eh_personality\.o|eh_throw\.o'; then
+    echo "ERROR: RTTI or EH object pulled in no-rtti/no-exceptions smoke_nostring link" >&2
+    exit 1
+  fi
+fi
+
+echo "=== Audit 6c: smoke_shared.cpp (pure make_shared + weak_ptr::lock) check ==="
+cat > "$SMOKE_DIR/smoke_shared.cpp" <<'EOF'
+#include <cstdlib>
+#include <memory>
+#include <new>
+
+#if !defined(_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY) || _GLIBCXX_HAVE_ATOMIC_LOCK_POLICY != 1
+#error "_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY must be 1"
+#endif
+static_assert(std::__default_lock_policy == std::_S_atomic, "Expected _S_atomic lock policy");
+
+void* operator new(std::size_t s) { return std::malloc(s ? s : 1); }
+void* operator new[](std::size_t s) { return std::malloc(s ? s : 1); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+
+int main() {
+  auto sp = std::make_shared<int>(42);
+  std::weak_ptr<int> wp = sp;
+  auto locked = wp.lock();
+  return locked ? *locked : 0;
+}
+EOF
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  -std=gnu++23 "$OPT_FLAG" $RTTI_FLAGS $EXCEPT_FLAGS -ffunction-sections -fdata-sections \
+  -isystem "$BUILD_DIR/include/xtensa-esp-elf" \
+  -isystem "$BUILD_DIR/include" \
+  $INC_EXTRA \
+  -c "$SMOKE_DIR/smoke_shared.cpp" -o "$SMOKE_DIR/smoke_shared.o"
+
+xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-literals \
+  $RTTI_FLAGS $EXCEPT_FLAGS \
+  -L"$SMOKE_DIR/lib" -L"$LIB_ROOT/$RTTI_SUB" \
+  -specs=nosys.specs -Wl,--gc-sections -Wl,-T,"$SMOKE_DIR/smoke.ld" -Wl,-Map="$SMOKE_DIR/smoke_shared.map" \
+  "$SMOKE_DIR/smoke_shared.o" \
+  -o "$SMOKE_DIR/smoke_shared.elf"
+
+grep -q "$SMOKE_DIR/lib/libstdc++.a" "$SMOKE_DIR/smoke_shared.map" || {
+  echo "ERROR: smoke_shared link did not use newly built libstdc++.a" >&2
+  exit 1
+}
+if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_shared.map" | \
+    grep -E 'shared_ptr\.o|guard\.o|eh_exception\.o|hash_bytes\.o|pthread_mutex|pthread_cond|pthread_once|libpthread\.a'; then
+  echo "ERROR: Unwanted object pulled in smoke_shared link" >&2
+  exit 1
+fi
+if [[ "$RTTI" == "no-rtti" ]]; then
+  if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke_shared.map" | \
+      grep -E 'class_type_info\.o|si_class_type_info\.o'; then
+    echo "ERROR: RTTI type_info object pulled in no-rtti smoke_shared link" >&2
+    exit 1
+  fi
+fi
+xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_shared.elf" | grep -q ' T __atomic_compare_exchange_4$' || {
+  echo "ERROR: __atomic_compare_exchange_4 not linked in smoke_shared.elf" >&2
   exit 1
 }
 
