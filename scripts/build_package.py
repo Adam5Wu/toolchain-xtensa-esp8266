@@ -57,6 +57,27 @@ def deterministic_zip_info(full: Path, rel: str) -> zipfile.ZipInfo:
     return zi
 
 
+def dereference_symlinks(root_dir: Path) -> None:
+    """Replace symlinks created by upstream POSIX tarballs with regular file copies."""
+    stage_resolved = root_dir.resolve()
+    symlinks: list[Path] = []
+    for root, dirs, files in os.walk(root_dir, followlinks=False):
+        for name in dirs + files:
+            p = Path(root) / name
+            if p.is_symlink():
+                symlinks.append(p)
+    for p in symlinks:
+        if not p.is_symlink():
+            continue
+        real = p.resolve(strict=True)
+        real.relative_to(stage_resolved)
+        p.unlink()
+        if real.is_dir():
+            shutil.copytree(real, p, symlinks=False)
+        else:
+            shutil.copy2(real, p)
+
+
 def build_package(
     work_dir: Path,
     out_zip: Path,
@@ -83,11 +104,21 @@ def build_package(
     print(f"Overlaying {multilib_txz.name}...")
     with tarfile.open(multilib_txz, "r:xz") as tf:
         tf.extractall(stage, filter="tar")
+    dereference_symlinks(stage)
 
     if custom_overlay is not None:
         print(f"Overlaying {custom_overlay.name}...")
+        stage_resolved = stage.resolve()
         with tarfile.open(custom_overlay, "r:xz") as tf:
-            tf.extractall(stage, filter="tar")
+            for member in tf.getmembers():
+                if member.issym() or member.islnk():
+                    raise RuntimeError(f"Unexpected link in custom overlay: {member.name}")
+                if member.isfile():
+                    target = stage / member.name
+                    target.resolve().relative_to(stage_resolved)
+                    if target.is_symlink() or target.is_file():
+                        target.unlink()
+                tf.extract(member, stage, filter="tar")
 
     tc_root = stage / "xtensa-esp-elf"
     if not tc_root.is_dir():
