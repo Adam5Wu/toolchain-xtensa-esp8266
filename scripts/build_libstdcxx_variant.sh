@@ -302,8 +302,13 @@ if [[ "$RTTI" == "no-rtti" && "$EXCEPTIONS" == "no-exceptions" ]]; then
     echo "ERROR: RTTI or EH object pulled in no-rtti/no-exceptions smoke link" >&2
     exit 1
   fi
-  if xtensa-esp-elf-readelf -S "$SMOKE_DIR/smoke.elf" | grep -E '\.eh_frame|\.gcc_except_table'; then
-    echo "ERROR: Exception tables found in no-rtti/no-exceptions smoke.elf" >&2
+  if xtensa-esp-elf-readelf -S "$SMOKE_DIR/smoke.elf" | grep -E '\.gcc_except_table'; then
+    echo "ERROR: .gcc_except_table found in no-rtti/no-exceptions smoke.elf" >&2
+    exit 1
+  fi
+  EH_HEX=$(xtensa-esp-elf-readelf -S "$SMOKE_DIR/smoke.elf" | awk '/\.eh_frame /{for(i=1;i<=NF;i++) if($i=="PROGBITS") {print $(i+3); exit}}')
+  if [[ -n "${EH_HEX:-}" && $((16#$EH_HEX)) -gt 4 ]]; then
+    echo "ERROR: .eh_frame size (0x${EH_HEX} > 4 B crtend terminator) in no-rtti/no-exceptions smoke.elf" >&2
     exit 1
   fi
 fi
