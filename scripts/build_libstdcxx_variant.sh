@@ -397,8 +397,8 @@ xtensa-esp-elf-g++ -mdynconfig=xtensa_esp8266.so -mlongcalls -mtext-section-lite
   $INC_EXTRA \
   -c "$SMOKE_DIR/smoke_nostring.cpp" -o "$SMOKE_DIR/smoke_nostring.o"
 
-if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nostring.o" | grep -q '_M_dispose'; then
-  echo "ERROR: smoke_nostring.o unexpectedly emitted _M_dispose (invalidates nostring test)" >&2
+if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke_nostring.o" | grep -E 'basic_string.*_M_dispose|_ZNSs.*_M_dispose'; then
+  echo "ERROR: smoke_nostring.o unexpectedly emitted basic_string::_M_dispose (invalidates nostring test)" >&2
   exit 1
 fi
 
