@@ -49,12 +49,12 @@ Both entrypoints invoke `.github/workflows/_build.yml`, which:
    gh release edit v<version> -R Adam5Wu/toolchain-xtensa-esp8266 --draft=false
    ```
 6. **Failed-draft recovery** (since `main` is protected against force-push and `release.yml` enforces `main` ancestry):
-   - Delete the Draft Release (`gh release delete v<version> --yes`) and delete the remote/local tag (`git push origin :refs/tags/v<version>` and `git tag -d v<version>`).
+   - Delete the Draft Release (`gh release delete v<version> -R Adam5Wu/toolchain-xtensa-esp8266 --yes`) and delete the remote/local tag (`git push origin :refs/tags/v<version>` and `git tag -d v<version>`).
    - Fix the issue on `dev`, verify via `build-dev.yml`, open and merge a new `dev -> main` Squash PR, then re-tag the new `main` commit.
 
 ## GCC / Newlib Upgrade & Patch Rebase Checklist
 
 When rebasing onto a newer Espressif crosstool-NG release:
 1. Update `TAG`, `NEWLIB_TAG`, and pinned SHA-256 digests in `.github/workflows/_build.yml`, `scripts/build_libstdcxx_variant.sh`, `scripts/build_newlib_nano.sh`, and `scripts/build_package.py`.
-2. Rebase `patches/<gcc-tag>/01-esp8266-atomicity.patch` and `02-esp8266-filesystem.patch` onto the new `espressif/gcc` tag, and `patches/newlib-<newlib-tag>/01-nano-vfprintf-int64-c99-float-placeholder.patch` onto the matching `espressif/newlib-esp32` tag.
+2. Rebase `patches/<gcc-tag>/01-esp8266-atomicity.patch`, `02-esp8266-filesystem.patch`, `03-esp8266-shared-ptr.patch`, and `04-esp8266-format-o2.patch` onto the new `espressif/gcc` tag, and `patches/newlib-<newlib-tag>/01-nano-vfprintf-int64-c99-float-placeholder.patch` onto the matching `espressif/newlib-esp32` tag.
 3. Bump `"version"` in `package.json`, update `README.md` if upstream digests changed, and run `build-dev.yml` on `dev` to verify all §4.1 and §4.2 audits pass before cutting a release PR.
