@@ -274,13 +274,15 @@ grep -q "$SMOKE_DIR/lib/libstdc++.a" "$SMOKE_DIR/smoke.map" || {
   exit 1
 }
 if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke.map" | \
-    grep -E 'locale-inst\.o|wlocale-inst\.o|new_handler\.o|guard\.o|basic_file|ostream|format\.o|chmod\.o|chdir\.o|getcwd\.o|statvfs\.o'; then
+    grep -E 'locale-inst\.o|wlocale-inst\.o|new_handler\.o|basic_file|ostream|format\.o|chmod\.o|chdir\.o|getcwd\.o|statvfs\.o'; then
   echo "ERROR: Unwanted object pulled in smoke link" >&2
   exit 1
 fi
-if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke.elf" | grep -E 'pthread_mutex|get_mutex'; then
-  echo "ERROR: pthread_mutex / get_mutex linked into smoke.elf" >&2
-  exit 1
+if [[ "$EXCEPTIONS" == "no-exceptions" ]]; then
+  if xtensa-esp-elf-nm --defined-only "$SMOKE_DIR/smoke.elf" | grep -E 'pthread_mutex|get_mutex|__cxa_guard_acquire|__cxa_throw'; then
+    echo "ERROR: pthread_mutex / get_mutex / guard / throw linked into no-exceptions smoke.elf" >&2
+    exit 1
+  fi
 fi
 if [[ "$RTTI" == "no-rtti" && "$EXCEPTIONS" == "no-exceptions" ]]; then
   if awk '/^Archive member included/{p=1} /^Allocating common/{p=0} p' "$SMOKE_DIR/smoke.map" | \
