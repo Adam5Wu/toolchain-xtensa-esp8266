@@ -74,7 +74,7 @@ done
 
 # 3. Derive per-variant compiler flags & sysroot paths
 OPT_FLAG="-O2"
-INC_EXTRA=""
+INC_EXTRA="-isystem $TC/xtensa-esp-elf/include"
 LIB_ROOT="$TC/xtensa-esp-elf/lib"
 if [[ "$LIBC" == "newlib-nano" ]]; then
   OPT_FLAG="-Os"
@@ -193,9 +193,12 @@ grep -q '^#define _GLIBCXX_HAVE_ATOMIC_LOCK_POLICY 1$' "$CCFG" || {
 }
 
 echo "=== Audit 5: allowlisted c++config.h ABI diff ==="
-if diff -u "$STOCK_CCFG" "$CCFG" | grep -E '^[+-](#|/\* #undef)' | grep -vE \
-    '^[+-](#define|/\* #undef) (_GLIBCXX_USE_(CHMOD|CHDIR|GETCWD)|_GLIBCXX_HAVE_SYS_STATVFS_H|_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY)\b'; then
+DIFF_OUT="$(diff -u "$STOCK_CCFG" "$CCFG" || true)"
+BAD_DIFF="$(printf '%s\n' "$DIFF_OUT" | grep -E '^[+-](#|/\* #undef)' | grep -vE \
+    '^[+-](#define|/\* #undef) (_GLIBCXX_USE_(CHMOD|CHDIR|GETCWD)|_GLIBCXX_HAVE_SYS_STATVFS_H|_GLIBCXX_HAVE_ATOMIC_LOCK_POLICY)\b' || true)"
+if [[ -n "$BAD_DIFF" ]]; then
   echo "ERROR: Unexpected c++config.h ABI drift!" >&2
+  printf '%s\n' "$BAD_DIFF" >&2
   diff -u "$STOCK_CCFG" "$CCFG" || true
   exit 1
 fi
